@@ -1,0 +1,5 @@
+Condition,Scraps,Total Scrap Area (in2),Recovered Area (in2),Total Triangles,Overall Recovery (%),Mean Recovery (%),Median Recovery (%),Std Recovery (%),SEM Recovery (%)
+Fixed main orientation,433,18041.3962,14422.0000,28844,79.9384,62.8195,68.0038,22.7607,1.0938
+Fixed anti orientation,433,18041.3962,14426.0000,28852,79.9606,62.9126,67.3675,22.7267,1.0922
+Best single orientation,433,18041.3962,14478.5000,28957,80.2515,63.5916,68.2502,22.3201,1.0726
+Best + greedy fill-in,433,18041.3962,14505.0000,29010,80.3984,63.7553,68.2924,22.3826,1.0756
