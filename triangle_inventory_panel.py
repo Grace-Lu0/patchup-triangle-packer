@@ -3,7 +3,7 @@ import random
 import cv2
 import numpy as np
 INVENTORY_PATH = 'triangle_inventory.json'
-OUTPUT_PATH = 'composition images/3_triangle_inventory.png'
+OUTPUT_PATH = 'composition_images/3_triangle_inventory.png'
 GROUP_BY = 'color_category'
 NUM_GROUPS = 5
 SAMPLES_PER_GROUP = 5
