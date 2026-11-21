@@ -1,0 +1,21 @@
+# Python environments
+.venv/
+
+# Python caches and virtual artifacts
+__pycache__/
+*.py[cod]
+
+# Editors
+.vscode/
+.idea/
+
+# Generated project outputs
+*_analysis*.png
+harvest_report*.csv
+triangle_inventory.*
+pinwheel_block_*.png
+ralli_block_*.png
+composition_images/
+scrap_analysis_csv/
+scrap_analysis_images/
+statistics_images/
