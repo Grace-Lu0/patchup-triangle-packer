@@ -1,57 +1,3 @@
-"""
-compose.py
-
-Ralli-inspired compositions, real fabric texture. Two patterns:
-  --pattern pyramid  (default) growing pyramid quadrants
-  --pattern pinwheel pinwheel blocks (8 triangles per block, see PINWHEEL section)
-
-Builds one image per fabric-type folder (e.g. linens, cottons) from the
-triangle inventory (triangle_inventory.json).
-
---------------------------------------------------------------------------
-GEOMETRY - confirmed against a hand-drawn diagram before building this
-
-  - A square is split by its two diagonals into 4 congruent right-
-    isosceles triangles, meeting at the center - one per quadrant
-    (up, down, left, right).
-  - Take one quadrant's triangle as "row 1": apex at the square's center,
-    base (hypotenuse) with 2 corner points facing outward.
-  - Row 2 is 2 new triangles, same size and orientation, each with its
-    own apex anchored exactly on one of row 1's 2 base corners. Between
-    them, a single upside-down gap triangle forms - same size and shape
-    as every other triangle, no cutting involved.
-  - Row 3 is 3 triangles, anchored on row 2's 3 base corners (2 outer
-    triangles' corners plus the 1 shared corner between them), with 2
-    gaps. In general, row k has k triangles anchored on row (k-1)'s k
-    corner points, with k-1 gaps - growing by exactly one triangle per
-    row, always congruent, never cut.
-  - Each quadrant grows for LINES_PER_QUADRANT rows (5 by default), then
-    stops. Once all 4 quadrants of a square have completed their rows,
-    that square is finished and an entirely new square begins next to it
-    (fresh, independent color choices - no relation to the square before
-    it).
-  - Every quadrant, in every square, independently picks its own two
-    color categories: one for the "row" triangles that are actually being
-    placed, one for the negative-space gap triangles between them. No
-    coordination between the 4 quadrants of one square, or between
-    neighboring squares - repeats are fine.
-  - Rendering uses the real cropped photo content of an actual harvested
-    triangle in the chosen category, not a flat average color, warped to
-    fit its slot via an affine transform from its 3 real vertices to its
-    3 destination vertices.
---------------------------------------------------------------------------
-
-What's missing / simplified:
-  - No adjacency rule between neighboring squares or quadrants - colors
-    can and will repeat right next to each other, by design.
-  - Triangle reuse within a chosen category is unbounded.
-  - A fabric folder with only one color category present falls back to
-    using that same category for both the row-triangle and gap roles.
-
-Run directly with:
-    python compose.py
-"""
-
 import json
 import random
 from collections import defaultdict
@@ -63,53 +9,26 @@ from report import compute_fabric_usage, compute_total_scrap_area_by_folder, sav
 
 INVENTORY_PATH = "triangle_inventory.json"
 LINES_PER_QUADRANT = 5
-UNIT_BASE_PX = 40  # hypotenuse length of one unit triangle, in pixels
+UNIT_BASE_PX = 40
 RANDOM_SEED = 42
 BACKGROUND_COLOR_BGR = (235, 235, 235)
 
-# Grid size is computed per fabric folder from how many triangles are
-# actually available (see optimize_grid_size), rather than fixed. These
-# control that computation; pass explicit rows/cols to compose_folder or
-# compose to override the optimizer entirely.
-MAX_REUSE_FACTOR = 4.0  # average number of times a single triangle may be reused
-TARGET_ASPECT_RATIO = 1.5  # preferred width:height of the finished grid
+MAX_REUSE_FACTOR = 4.0
+TARGET_ASPECT_RATIO = 1.5
 MIN_SQUARES = 1
 
 DIRECTIONS = ["up", "down", "left", "right"]
 
 
 def triangles_per_square(lines):
-    """Total triangles (row + gap) needed for one complete square: 4 * lines^2."""
     return 4 * lines * lines
 
 
 def optimize_grid_size(available_triangles, lines, max_reuse=MAX_REUSE_FACTOR,
                         target_aspect=TARGET_ASPECT_RATIO, min_squares=MIN_SQUARES,
                         per_square=None):
-    """
-    Compute the largest rows x cols rectangle of squares that can be built
-    from the available triangle count without exceeding max_reuse average
-    uses per triangle, preferring a rows:cols ratio close to target_aspect
-    (width:height) among options that use the budget equally well.
-
-    Args:
-        available_triangles: Total triangles in the fabric folder's
-            inventory (every category combined - any category can be
-            picked for any quadrant, so the budget is folder-wide).
-        lines: LINES_PER_QUADRANT - how many rows each quadrant grows.
-        max_reuse: Average number of times any single triangle may be
-            reused across the whole composition. 1.0 means no reuse at
-            all; higher values allow denser, larger grids from the same
-            inventory at the cost of more repetition.
-        target_aspect: Preferred cols/rows ratio for the finished grid.
-        min_squares: Always produce at least this many squares, even if
-            the strict budget computes to fewer (with a warning).
-
-    Returns:
-        (rows, cols, max_squares, per_square) tuple.
-    """
     if per_square is None:
-        per_square = triangles_per_square(lines)  # pyramid: 4 * lines^2
+        per_square = triangles_per_square(lines)
     max_squares = int((available_triangles * max_reuse) // per_square)
 
     if max_squares < min_squares:
@@ -127,7 +46,6 @@ def optimize_grid_size(available_triangles, lines, max_reuse=MAX_REUSE_FACTOR,
             break
         total = rows * cols
         aspect_diff = abs((cols / rows) - target_aspect)
-        # prefer using as much of the budget as possible, then closest aspect ratio
         if total > best_total or (total == best_total and aspect_diff < best_aspect_diff):
             best_rows, best_cols, best_total = rows, cols, total
             best_aspect_diff = aspect_diff
@@ -136,7 +54,6 @@ def optimize_grid_size(available_triangles, lines, max_reuse=MAX_REUSE_FACTOR,
 
 
 def load_inventory_by_folder(path=INVENTORY_PATH):
-    """Load the triangle inventory and group records by fabric-type folder."""
     with open(path) as f:
         records = json.load(f)
     if not records:
@@ -149,43 +66,22 @@ def load_inventory_by_folder(path=INVENTORY_PATH):
 
 
 def build_category_pools(records):
-    """Split a folder's records into pools keyed by color_category."""
     pools = defaultdict(list)
     for r in records:
         pools[r["color_category"]].append(r)
     return dict(pools)
 
 
-# --------------------------------------------------------------------------
-# Quadrant geometry
-# --------------------------------------------------------------------------
 
 def build_quadrant_local_triangles(lines, unit_base):
-    """
-    Build every triangle in one quadrant, in local (u, v) coordinates:
-    v=0 is the square's center (the growth axis), u is perpendicular to
-    it. Growth proceeds in +v.
-
-    Row 1 is the single quadrant triangle from splitting the square by
-    its diagonals: apex at (0, 0), base corners at (-w/2, w/2) and
-    (w/2, w/2), where w = unit_base.
-
-    Row k (k >= 2) has k triangles, each anchored (apex) on one of row
-    (k-1)'s k base corner points, with (k-1) upside-down gap triangles
-    filling the space between them.
-
-    Returns a list of (local_triangle_coords, role) pairs, role being
-    'row' (the deliberately placed triangle) or 'gap' (negative space).
-    """
     w = unit_base
     triangles = []
 
-    # Row 1: apex at the center, base corners are this row's "anchor points"
     apex_v = 0
-    anchor_us = [0]  # apex positions for the current row
+    anchor_us = [0]
     row1_tri = [(0, apex_v), (-w / 2, apex_v + w / 2), (w / 2, apex_v + w / 2)]
     triangles.append((row1_tri, "row"))
-    anchor_us = [-w / 2, w / 2]  # row 1's 2 base corners become row 2's anchors
+    anchor_us = [-w / 2, w / 2]
     apex_v = w / 2
 
     for k in range(2, lines + 1):
@@ -212,18 +108,16 @@ def build_quadrant_local_triangles(lines, unit_base):
 
 
 def _local_to_canvas(u, v, direction, center_x, center_y):
-    """Map a quadrant-local (u, v) point to absolute canvas pixel coordinates."""
     if direction == "up":
         return center_x + u, center_y - v
     if direction == "down":
         return center_x + u, center_y + v
     if direction == "left":
         return center_x - v, center_y + u
-    return center_x + v, center_y + u  # right
+    return center_x + v, center_y + u
 
 
 def build_quadrant_triangles(direction, lines, unit_base, center_x, center_y):
-    """Build every (canvas_coords, role) pair for one quadrant."""
     local_triangles = build_quadrant_local_triangles(lines, unit_base)
     return [
         ([_local_to_canvas(u, v, direction, center_x, center_y) for u, v in tri], role)
@@ -231,34 +125,16 @@ def build_quadrant_triangles(direction, lines, unit_base, center_x, center_y):
     ]
 
 
-# --------------------------------------------------------------------------
-# Category selection
-# --------------------------------------------------------------------------
 
 def pick_quadrant_categories(available_categories, rng):
-    """
-    Independently choose a (row, gap) color category pair for one
-    quadrant. Distinct categories are preferred; if only one category is
-    available for this fabric folder, it's used for both roles.
-    """
     if len(available_categories) == 1:
         return available_categories[0], available_categories[0]
     row_cat, gap_cat = rng.sample(available_categories, 2)
     return row_cat, gap_cat
 
 
-# --------------------------------------------------------------------------
-# Real photo texture rendering
-# --------------------------------------------------------------------------
 
 def paste_triangle_texture(canvas, record, dest_tri, image_cache):
-    """
-    Crop the real photo content for a triangle's source region and warp
-    it onto the destination triangle on the canvas, via an affine
-    transform from the triangle's 3 real vertices to its 3 destination
-    vertices. Only the destination triangle's interior is copied (masked),
-    and only the part of it that actually falls within canvas bounds.
-    """
     src_path = record["source_image"]
     if src_path not in image_cache:
         img = cv2.imread(src_path, cv2.IMREAD_COLOR)
@@ -304,13 +180,9 @@ def paste_triangle_texture(canvas, record, dest_tri, image_cache):
     canvas_region[keep] = warped_region[keep]
 
 
-# --------------------------------------------------------------------------
-# Assembling one square and the full grid
-# --------------------------------------------------------------------------
 
 def draw_square(canvas, pools, available_categories, center_x, center_y,
                  lines, unit_base, rng, pool_cursors, image_cache, used_ids):
-    """Draw one square's four independently-colored quadrants onto the canvas."""
     for direction in DIRECTIONS:
         row_cat, gap_cat = pick_quadrant_categories(available_categories, rng)
         triangles = build_quadrant_triangles(direction, lines, unit_base, center_x, center_y)
@@ -330,26 +202,6 @@ def compose_folder(folder, records, rows=None, cols=None, lines=LINES_PER_QUADRA
                     unit_base=UNIT_BASE_PX, seed=RANDOM_SEED,
                     max_reuse=MAX_REUSE_FACTOR, target_aspect=TARGET_ASPECT_RATIO,
                     total_scrap_area_in2=None):
-    """
-    Build and save one composition image for a single fabric-type folder.
-
-    If rows or cols is left as None, the grid size is computed by
-    optimize_grid_size from how many triangles are actually available in
-    this folder, rather than using a fixed size - pass both explicitly to
-    override the optimizer entirely.
-
-    Args:
-        total_scrap_area_in2: This folder's total ORIGINAL scrap area (in²),
-            from report.compute_total_scrap_area_by_folder, used so the
-            usage report's "unused" figure includes fabric that was never
-            harvested into a triangle at all, not just harvested-but-
-            unplaced triangles. Pass None to fall back to harvested-area-only.
-
-    Returns:
-        (output_path, usage_stats) tuple, or (None, None) if the folder
-        has no usable triangles. usage_stats is the dict produced by
-        report.compute_fabric_usage.
-    """
     pools = build_category_pools(records)
     available_categories = list(pools.keys())
 
@@ -370,7 +222,7 @@ def compose_folder(folder, records, rows=None, cols=None, lines=LINES_PER_QUADRA
         print(f"[{folder}] {len(records)} triangles across categories: {available_categories}, "
               f"grid fixed at {rows}x{cols}")
 
-    square_px = lines * unit_base  # full side length of one completed square
+    square_px = lines * unit_base
     width_px = cols * square_px
     height_px = rows * square_px
 
@@ -405,12 +257,6 @@ def compose_folder(folder, records, rows=None, cols=None, lines=LINES_PER_QUADRA
 def compose(inventory_path=INVENTORY_PATH, rows=None, cols=None, lines=LINES_PER_QUADRANT,
             unit_base=UNIT_BASE_PX, seed=RANDOM_SEED,
             max_reuse=MAX_REUSE_FACTOR, target_aspect=TARGET_ASPECT_RATIO):
-    """
-    Load the inventory, build one size-optimized composition per
-    fabric-type folder, and save a fabric_usage_report.csv summarizing
-    how much of each folder's ORIGINAL scrap fabric made it into its
-    quilt (including fabric that was never harvested into a triangle).
-    """
     by_folder = load_inventory_by_folder(inventory_path)
     all_records = [r for records in by_folder.values() for r in records]
     scrap_area_by_folder = compute_total_scrap_area_by_folder(all_records)
@@ -433,45 +279,17 @@ def compose(inventory_path=INVENTORY_PATH, rows=None, cols=None, lines=LINES_PER
     return outputs
 
 
-# ==========================================================================
-# PINWHEEL PATTERN
-# ==========================================================================
-#
-# Geometry (from the Ralli quilt photo)
-#   - One pinwheel block is a square of side 2*leg, split by its two
-#     diagonals AND its two mid-lines into 8 congruent right isosceles
-#     triangles that all meet at the block's center. Each triangle has its
-#     right angle on an edge midpoint and a 45-degree angle at the center.
-#   - Going around the center, the 8 triangles alternate between two
-#     color categories (A, B, A, B, ...) which makes the pinwheel.
-#   - Every block independently picks its own 2 color categories at random.
-#   - Blocks tile edge to edge into a rows x cols quilt.
-#   - Triangles keep ONE size: the inventory triangles are all right
-#     isosceles with the same leg length t, so the block side is 2*t.
-#   - "No reuse" (default, max_reuse=1.0): every inventory triangle is used
-#     at most once. The grid is sized so that rows*cols*8 <= #triangles. If a
-#     color category runs out mid-block, the missing slot is filled from
-#     whichever category has the most triangles left. Blocks that cannot be
-#     filled at all stay blank (background) and are reported.
-#   - With max_reuse > 1.0 triangles may be reused when a pool runs out.
 
-PINWHEEL_LEG_PX = 40  # leg length of one triangle in pixels (block side = 2x)
+PINWHEEL_LEG_PX = 40
 TRIANGLES_PER_PINWHEEL = 8
-MIN_PAIR_CONTRAST = 60  # min RGB distance between a block's two category colors
+MIN_PAIR_CONTRAST = 60
 
 
 def pinwheel_block_triangles(center_x, center_y, leg):
-    """
-    Return the 8 destination triangles of one pinwheel block as a list of
-    (vertices, right_angle_index) where vertices = [center, p_i, p_i+1].
-    right_angle_index is which of the 3 vertices is the right angle (the
-    edge midpoint among p_i / p_i+1), so fabric can be warped without
-    distortion.
-    """
     cx, cy, L = center_x, center_y, leg
     ring = [(cx + L, cy), (cx + L, cy + L), (cx, cy + L), (cx - L, cy + L),
             (cx - L, cy), (cx - L, cy - L), (cx, cy - L), (cx + L, cy - L)]
-    mids = {0, 2, 4, 6}  # ring indices that are edge midpoints (the others are corners)
+    mids = {0, 2, 4, 6}
     tris = []
     for i in range(8):
         j = (i + 1) % 8
@@ -482,21 +300,15 @@ def pinwheel_block_triangles(center_x, center_y, leg):
 
 
 def _right_angle_order(vertices):
-    """Return the record's 3 vertices ordered (right_angle, leg_end_1, leg_end_2)."""
     pts = [np.array(v, dtype=float) for v in vertices[:3]]
     sides = [np.linalg.norm(pts[(k + 1) % 3] - pts[(k + 2) % 3]) for k in range(3)]
-    ra = int(np.argmax(sides))  # vertex opposite the longest side = right angle
+    ra = int(np.argmax(sides))
     return [pts[ra], pts[(ra + 1) % 3], pts[(ra + 2) % 3]]
 
 
 def paste_triangle_texture_oriented(canvas, record, dest_verts, dest_right_idx,
                                      image_cache, rng, flat=False):
-    """
-    Like paste_triangle_texture, but maps the source triangle's right-angle
-    vertex onto the destination's right-angle vertex (so the fabric isn't
-    sheared), randomly flipping which leg goes where for variety.
-    """
-    if flat:  # flat-color preview: shows the pinwheel structure regardless of fabric texture
+    if flat:
         r, g, b = record["color"]
         cv2.fillConvexPoly(canvas, np.array(dest_verts, dtype=np.int32), (b, g, r))
         return
@@ -505,14 +317,12 @@ def paste_triangle_texture_oriented(canvas, record, dest_verts, dest_right_idx,
     if rng.random() < 0.5:
         others.reverse()
     dst = [dest_verts[dest_right_idx], dest_verts[others[0]], dest_verts[others[1]]]
-    # reuse the existing warp, passing a record copy with reordered vertices
     rec = dict(record)
     rec["vertices_px"] = [list(p) for p in src]
     paste_triangle_texture(canvas, rec, dst, image_cache)
 
 
 class TrianglePools:
-    """Per-category triangle pools with optional no-reuse bookkeeping."""
 
     def __init__(self, pools, rng, allow_reuse):
         self.rng = rng
@@ -521,7 +331,6 @@ class TrianglePools:
         for lst in self.remaining.values():
             rng.shuffle(lst)
         self.all = {c: list(p) for c, p in pools.items()}
-        # mean RGB of each category, used to keep the 2 colors of a block visibly different
         self.mean_rgb = {c: np.mean([r["color"] for r in p], axis=0) for c, p in pools.items()}
 
     def count(self, category):
@@ -531,7 +340,6 @@ class TrianglePools:
         return sum(len(v) for v in self.remaining.values())
 
     def take(self, category):
-        """Take one triangle from `category`; fall back to the fullest pool."""
         if not self.remaining[category]:
             if self.allow_reuse:
                 self.remaining[category] = list(self.all[category])
@@ -544,14 +352,11 @@ class TrianglePools:
 
 
 def pick_block_categories(pools_obj, rng):
-    """Pick 2 distinct color categories for one block (4 triangles each)."""
     cats = list(pools_obj.remaining.keys())
     stocked = [c for c in cats if pools_obj.count(c) >= 4]
     if pools_obj.allow_reuse:
         stocked = cats
     if len(stocked) >= 2:
-        # random pair, but only pairs whose average colors differ enough to read
-        # as a pinwheel; if none do, take the most different pair available
         pairs = [(a, b) for i, a in enumerate(stocked) for b in stocked[i + 1:]]
         dist = lambda p: float(np.linalg.norm(pools_obj.mean_rgb[p[0]] - pools_obj.mean_rgb[p[1]]))
         good = [p for p in pairs if dist(p) >= MIN_PAIR_CONTRAST]
@@ -567,7 +372,6 @@ def compose_folder_pinwheel(folder, records, rows=None, cols=None,
                              leg=PINWHEEL_LEG_PX, seed=RANDOM_SEED, max_reuse=1.0,
                              target_aspect=TARGET_ASPECT_RATIO, total_scrap_area_in2=None,
                              flat=False):
-    """Build and save one pinwheel quilt image for a fabric-type folder."""
     print(f"[{folder}] PATTERN: pinwheel ({'flat color preview' if flat else 'real fabric texture'})")
     pools = build_category_pools(records)
     if not pools:
@@ -624,7 +428,6 @@ def compose_folder_pinwheel(folder, records, rows=None, cols=None,
 def compose_pinwheel(inventory_path=INVENTORY_PATH, rows=None, cols=None,
                       leg=PINWHEEL_LEG_PX, seed=RANDOM_SEED, max_reuse=1.0,
                       target_aspect=TARGET_ASPECT_RATIO, flat=False):
-    """Pinwheel quilt for every fabric-type folder in the inventory."""
     by_folder = load_inventory_by_folder(inventory_path)
     all_records = [r for recs in by_folder.values() for r in recs]
     scrap_area_by_folder = compute_total_scrap_area_by_folder(all_records)
